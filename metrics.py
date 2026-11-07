@@ -147,6 +147,20 @@ def summarize_performance(perf: Union[Dict[str, Any], pd.DataFrame]) -> Dict[str
         mdd, dd_days = compute_drawdowns(eq)
         var95, es95 = var_es(r, alpha=0.95)
 
+        # BTC-denominated metrics (the strategy's objective is to accumulate BTC)
+        btc_metrics = {}
+        if 'Close' in df.columns:
+            eq_btc = (pd.to_numeric(df['Equity_USD'], errors='coerce')
+                      / pd.to_numeric(df['Close'], errors='coerce')).dropna()
+            if not eq_btc.empty and eq_btc.iloc[0] > 0:
+                mdd_btc, dd_days_btc = compute_drawdowns(eq_btc)
+                btc_metrics = {
+                    'Final Equity (BTC)': float(eq_btc.iloc[-1]),
+                    'Total Return BTC (%)': (eq_btc.iloc[-1] / eq_btc.iloc[0] - 1.0) * 100.0,
+                    'Max Drawdown BTC (%)': mdd_btc,
+                    'Longest DD BTC (days)': int(dd_days_btc),
+                }
+
         out = {
             'Final Equity (USD)': end,
             'Total Return (%)': total_ret * 100.0 if not np.isnan(total_ret) else np.nan,
@@ -158,6 +172,7 @@ def summarize_performance(perf: Union[Dict[str, Any], pd.DataFrame]) -> Dict[str
             'Longest DD (days)': int(dd_days),
             'VaR 95% (%)': var95 if not np.isnan(var95) else np.nan,
             'ES 95% (%)': es95 if not np.isnan(es95) else np.nan,
+            **btc_metrics,
         }
         return out
 

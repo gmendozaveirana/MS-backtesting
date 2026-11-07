@@ -87,8 +87,9 @@ def run_backtest(price_df: pd.DataFrame,
             free_margin -= (open_margin + commission_btc)
             free_margin = max(0.0, free_margin)
 
-            # Fix: For isolated margin, use ONLY pos_margin_btc as W (exclude free/spot)
-            isolated_wallet_btc = pos_margin_btc  # Simulates isolated: only allocated margin backs liq
+            # Isolated margin: position margin plus the margin buffer (profits swept
+            # above the initial margin) back the position; free margin does not
+            isolated_wallet_btc = pos_margin_btc + spot_btc
             start_liq_price = liquidation_price_inverse(
                 entry_price=avg_entry,
                 q_usd=pos_q_usd,
@@ -132,8 +133,8 @@ def run_backtest(price_df: pd.DataFrame,
         liq_denom_pre_btc = np.nan
         mm_btc_mark = 0.0
         if in_cycle and avg_entry is not None and model == 'inverse' and pos_q_usd > 0:
-            # Fix: Isolated - use only pos_margin_btc
-            isolated_wallet_btc = pos_margin_btc
+            # Isolated: position margin plus margin buffer (never used for ladder buys)
+            isolated_wallet_btc = pos_margin_btc + spot_btc
             liq_denom_pre_btc = isolated_wallet_btc + (pos_q_usd / avg_entry)
             liq_price_pre = liquidation_price_inverse(
                 entry_price=avg_entry,
