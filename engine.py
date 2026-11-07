@@ -63,7 +63,7 @@ def run_backtest(price_df: pd.DataFrame,
         fund_rate = row['FundingRateDaily']
 
         # 1) Start a new cycle (seed wallet and open)
-        if not in_cycle and not liquidated:
+        if not in_cycle and not (liquidated and cfg.stop_on_liquidation):
             cycle_id += 1
 
             # Seed this cycle: first cycle gets the initial margin; later cycles
@@ -152,16 +152,16 @@ def run_backtest(price_df: pd.DataFrame,
             cycles[-1].update({
                 'end_date': date,
                 'end_price': c,
-                'end_free_margin_btc': 0.0,
+                'end_free_margin_btc': free_margin,
                 'end_spot_btc': 0.0,
                 'end_pos_margin_btc': 0.0,
                 'end_pos_q_usd': 0.0,
-                'end_equity_btc_excl_unreal': 0.0,
+                'end_equity_btc_excl_unreal': free_margin,
                 'reason': 'LIQUIDATION',
                 'duration_days': (date - cycles[-1]['start_date']).days
             })
-            # Reset
-            free_margin = 0.0
+            # Isolated margin: the position margin and the margin buffer are lost;
+            # free margin (not yet deployed by the ladder) survives
             spot_btc = 0.0
             pos_margin_btc = 0.0
             pos_q_usd = 0.0
@@ -169,19 +169,19 @@ def run_backtest(price_df: pd.DataFrame,
             in_cycle = False
             liquidated = True
 
-            if cfg.stop_on_liquidation:
-                break
-            else:
-                # No position left today; record a flat day
+        if not in_cycle:
+            # Flat day (after a liquidation with stop_on_liquidation=True):
+            # keep recording equity so metrics cover the whole window
+            if liquidated and cfg.stop_on_liquidation:
                 daily.append({
                     'Date': date,
                     'Close': c,
-                    'Equity_USD': 0.0,
-                    'Free_Margin_BTC': 0.0,
+                    'Equity_USD': free_margin * c,
+                    'Free_Margin_BTC': free_margin,
                     'Spot_BTC': 0.0,
                     'Pos_Margin_BTC': 0.0,
                     'Pos_Q_USD': 0.0,
-                    'Base_Equity_BTC': 0.0,
+                    'Base_Equity_BTC': free_margin,
                     'Unreal_PnL_BTC': 0.0,
                     'Unreal_PnL_USD': 0.0,
                     'Avg_Entry': 0.0,
@@ -189,17 +189,13 @@ def run_backtest(price_df: pd.DataFrame,
                     'Liq_Price_Pre': 0.0,
                     'Liq_Price_Post': 0.0,
                     # Diagnostics:
-                    'Wallet_BTC_Excl_Unreal': 0.0,
+                    'Wallet_BTC_Excl_Unreal': free_margin,
                     'Q_over_Entry_BTC': 0.0,
                     'Liq_Denom_BTC_Pre': np.nan,
                     'Liq_Denom_BTC_Post': np.nan,
                     'MM_BTC_at_Mark': 0.0,
                     'Cycle': cycle_id
                 })
-                continue
-
-        if not in_cycle:
-            # Nothing to do
             continue
 
         # 5) Take profit (pre-ladder)
