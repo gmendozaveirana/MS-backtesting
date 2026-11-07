@@ -66,8 +66,9 @@ def run_backtest(price_df: pd.DataFrame,
         if not in_cycle and not liquidated:
             cycle_id += 1
 
-            # Seed this cycle with the initial margin
-            free_margin = cfg.initial_margin_btc
+            # Seed this cycle: first cycle gets the initial margin; later cycles
+            # continue with what is left (no external capital is ever added)
+            free_margin = cfg.initial_margin_btc if cycle_id == 1 else min(cfg.initial_margin_btc, free_margin)
             pos_margin_btc = 0.0
             avg_entry = None
             pos_q_usd = 0.0
@@ -268,11 +269,12 @@ def run_backtest(price_df: pd.DataFrame,
         # 7) Ladder (scale-in + optional extra injection)
         delta = (c / avg_entry) - 1.0 if (avg_entry and avg_entry > 0) else 0.0
         add_margin_btc, extra_injection_btc = ladder(delta, cfg.initial_margin_btc)
-        # Extra injection is new capital (external): add directly to pos margin
+        # Extra injection: move collateral from free margin to position margin,
+        # capped at the free margin available (no external capital)
         if extra_injection_btc > 0:
+            extra_injection_btc = min(extra_injection_btc, max(0.0, free_margin))
+            free_margin -= extra_injection_btc
             pos_margin_btc += extra_injection_btc
-            # Do NOT subtract from free_margin here -- leave it for potential adds/fees
-            # (Fix: Previously, this left free=0, blocking adds)
         # Now handle add (internal transfer + buy more Q)
         if model == 'inverse':
             # No q_cap to allow DCA even if over initial lev limit (fix: prevents blocking adds on drops)
@@ -287,14 +289,16 @@ def run_backtest(price_df: pd.DataFrame,
                     margin_needed = q_usd_allowable / (cfg.leverage_limit * fill)
                     # Commission for that notional
                     fee_btc = commission_btc_from_usd(q_usd_allowable, fill, cfg.commission_rate)
-                    # Total needed (but treat as injection if free insufficient)
                     total_btc_needed = margin_needed + fee_btc
-                    # Fix: If free insufficient, treat add_margin as new injection (don't scale to 0)
+                    # If free margin is insufficient, scale the add down to what is
+                    # available (zero when the ladder is fully deployed)
                     if total_btc_needed > free_margin:
-                        # Inject the shortfall as new capital (simulate external add)
-                        shortfall = total_btc_needed - max(0, free_margin)
-                        free_margin += shortfall  # Add new capital to free
-                    # Now execute (we have enough)
+                        scale = max(0.0, free_margin) / total_btc_needed
+                        q_usd_allowable *= scale
+                        margin_needed *= scale
+                        fee_btc *= scale
+                        total_btc_needed = margin_needed + fee_btc
+                    # Now execute
                     free_margin -= total_btc_needed
                     pos_margin_btc += margin_needed
                     # Update position notional and average entry (inverse harmonic)
