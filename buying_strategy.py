@@ -15,7 +15,10 @@ def ladder(delta_pct: float, initial_margin_btc: float) -> Tuple[float, float]:
         return 0.03 * initial_margin_btc, 0.0
     elif delta_pct > -0.20:
         return 0.04 * initial_margin_btc, 0.0
+    elif delta_pct > -0.30:
+        return 0.05 * initial_margin_btc, 0.0
     elif delta_pct > -0.40:
+        # extra injection (margin without notional) only below -30%
         return 0.05 * initial_margin_btc, 0.05 * initial_margin_btc
     elif delta_pct > -0.60:
         return 0.10 * initial_margin_btc, 0.10 * initial_margin_btc

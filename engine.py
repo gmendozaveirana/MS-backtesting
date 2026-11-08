@@ -39,7 +39,8 @@ def run_backtest(price_df: pd.DataFrame,
 
     # Wallet state (BTC)
     free_margin = 0.0
-    spot_btc = 0.0
+    spot_btc = 0.0          # kept for output compatibility; always 0 (profits are withdrawn)
+    withdrawals = []        # (date, BTC withdrawn at take-profit)
     pos_margin_btc = 0.0
 
     # Position state
@@ -89,7 +90,7 @@ def run_backtest(price_df: pd.DataFrame,
 
             # Isolated margin: position margin plus the margin buffer (profits swept
             # above the initial margin) back the position; free margin does not
-            isolated_wallet_btc = pos_margin_btc + spot_btc
+            isolated_wallet_btc = pos_margin_btc
             start_liq_price = liquidation_price_inverse(
                 entry_price=avg_entry,
                 q_usd=pos_q_usd,
@@ -112,21 +113,14 @@ def run_backtest(price_df: pd.DataFrame,
                 'last_liq_price': start_liq_price
             })
 
-        # 2) Funding (debited from pos_margin for isolated)
+        # 2) Funding (charged once): paid from free margin first; only the
+        # remainder is taken from the isolated position margin
         if in_cycle:
             if model == 'inverse' and pos_q_usd > 0:
                 fee_btc = funding_btc_from_usd(pos_q_usd, c, fund_rate)
-                pos_margin_btc -= fee_btc  # Deduct directly from pos (isolated)
-                pos_margin_btc = max(0.0, pos_margin_btc)  # Prevent negative
-                
-                if free_margin >= fee_btc:
-                    free_margin -= fee_btc
-                else:
-                    # Fix: Deduct remainder from pos_margin to avoid negative free/W reduction
-                    remainder = fee_btc - free_margin
-                    free_margin = 0.0
-                    pos_margin_btc -= remainder
-                    # Optional: Check if pos_margin_btc <0, trigger liq -- but for now, allow
+                from_free = min(fee_btc, max(0.0, free_margin))
+                free_margin -= from_free
+                pos_margin_btc = max(0.0, pos_margin_btc - (fee_btc - from_free))
 
         # 3) Pre-trade liquidation (after funding, before TP/ladder)
         liq_price_pre = 0.0
@@ -134,7 +128,7 @@ def run_backtest(price_df: pd.DataFrame,
         mm_btc_mark = 0.0
         if in_cycle and avg_entry is not None and model == 'inverse' and pos_q_usd > 0:
             # Isolated: position margin plus margin buffer (never used for ladder buys)
-            isolated_wallet_btc = pos_margin_btc + spot_btc
+            isolated_wallet_btc = pos_margin_btc
             liq_denom_pre_btc = isolated_wallet_btc + (pos_q_usd / avg_entry)
             liq_price_pre = liquidation_price_inverse(
                 entry_price=avg_entry,
@@ -211,10 +205,13 @@ def run_backtest(price_df: pd.DataFrame,
             free_margin += pos_margin_btc + realized_pnl_btc
             free_margin -= close_commission_btc
 
+            # Profits above the initial margin are withdrawn from the account:
+            # they are neither margin nor ladder capital
+            withdrawn_now = 0.0
             if free_margin > cfg.initial_margin_btc:
-                sweep = free_margin - cfg.initial_margin_btc
-                spot_btc += sweep
+                withdrawn_now = free_margin - cfg.initial_margin_btc
                 free_margin = cfg.initial_margin_btc
+                withdrawals.append((date, withdrawn_now))
 
             ends.append(date)
             cycles[-1].update({
@@ -225,6 +222,7 @@ def run_backtest(price_df: pd.DataFrame,
                 'end_pos_margin_btc': 0.0,
                 'end_pos_q_usd': 0.0,
                 'end_equity_btc_excl_unreal': free_margin + spot_btc,
+                'withdrawn_btc': withdrawn_now,
                 'reason': 'TAKE-PROFIT',
                 'duration_days': (date - cycles[-1]['start_date']).days
             })
@@ -369,10 +367,6 @@ def run_backtest(price_df: pd.DataFrame,
             free_margin += pos_margin_btc + realized_pnl_btc
             free_margin -= close_commission_btc
 
-            if free_margin > cfg.initial_margin_btc:
-                sweep = free_margin - cfg.initial_margin_btc
-                spot_btc += sweep
-                free_margin = cfg.initial_margin_btc
 
             ends.append(date)
             cycles[-1].update({
@@ -394,6 +388,15 @@ def run_backtest(price_df: pd.DataFrame,
             in_cycle = False
 
     perf = pd.DataFrame(daily)
+    if not perf.empty:
+        w = pd.Series(0.0, index=perf.index)
+        if withdrawals:
+            wd = pd.DataFrame(withdrawals, columns=['Date', 'w']).groupby('Date')['w'].sum()
+            w = perf['Date'].map(wd).fillna(0.0)
+        perf['Withdrawn_BTC'] = w.cumsum()
+        perf['Account_Equity_USD'] = perf['Equity_USD']
+        # Equity_USD = account + withdrawn profits (all metrics use the total)
+        perf['Equity_USD'] = perf['Account_Equity_USD'] + perf['Withdrawn_BTC'] * perf['Close']
     status = {
         'liquidated': liquidated,
         'cycles_completed': sum(1 for c in cycles if 'end_date' in c),
